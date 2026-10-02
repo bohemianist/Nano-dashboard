@@ -4,6 +4,41 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title> Nano Mobility 통합관제시스템</title>
+<script type="module">
+  // 1. 필요한 SDK 전부 import (database 포함!)
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
+  import { getDatabase, ref, set, onValue }
+    from "https://www.gstatic.com/firebasejs/12.19.0/firebase-database.js";
+
+  // 2. Firebase 설정 (지금 값 그대로 사용)
+  const firebaseConfig = {
+    apiKey: "AIzaSyD6ea9IQ8e_wLBo_BFFraQ_zG5qB70_ueg",
+    authDomain: "nano-dashboard-9bf9a.firebaseapp.com",
+    databaseURL: "https://nano-dashboard-9bf9a-default-rtdb.firebaseio.com",
+    projectId: "nano-dashboard-9bf9a",
+    storageBucket: "nano-dashboard-9bf9a.firebasestorage.app",
+    messagingSenderId: "700521506600",
+    appId: "1:700521506600:web:d837bf964ed4d6a2ddd21d",
+    measurementId: "G-CZZ2X6Z16Q"
+  };
+
+  // 3. 초기화
+  const app = initializeApp(firebaseConfig);
+  const db  = getDatabase(app);
+
+  // 4. 전역에서 쓸 수 있도록 window에 노출 (핵심!)
+  window.firebaseSave = function(key, value) {
+    return set(ref(db, 'robotData/' + key), value);
+  };
+
+  window.firebaseLoad = function(key, callback) {
+    onValue(ref(db, 'robotData/' + key), (snapshot) => {
+      callback(snapshot.val());
+    });
+  };
+
+  console.log('✅ Firebase 초기화 완료');
+</script>
 <link rel="stylesheet" as="style" crossorigin
   href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css" />
 <style>
@@ -1061,6 +1096,7 @@
              alt="" class="map-image" id="mapImage"
              onerror="this.classList.add('hidden'); document.getElementById('mapFallback').classList.remove('hidden');" />
 
+
         <svg class="map-svg-fallback hidden" id="mapFallback" viewBox="0 0 800 450" preserveAspectRatio="none">
           <defs>
             <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
@@ -1414,7 +1450,7 @@ const MAX_SPEED_DEFAULT = MAX_SPEED_DEFAULT_KMH * KMH_TO_MS;
 const MAX_SPEED_MIN     = MAX_SPEED_MIN_KMH * KMH_TO_MS;
 const MAX_SPEED_MAX     = MAX_SPEED_MAX_KMH * KMH_TO_MS;
 
-const STORAGE_KEY = 'ifms.robots.v3';
+const FIREBASE_KEY = 'config';
 
 let demoTimer = null;
 let robotCounter = 0;
@@ -2298,12 +2334,12 @@ function saveRobots(silent = false) {
     const payload = {
       version: 3,
       savedAt: new Date().toISOString(),
-      mapWidth: MAP_WIDTH,       /* ✅ 추가 */
-      mapHeight: MAP_HEIGHT,     /* ✅ 추가 */      
+      mapWidth: MAP_WIDTH,
+      mapHeight: MAP_HEIGHT,
       activeRobotId: state.activeRobotId,
       robots: state.robots.map(r => ({
         id: r.id, name: r.name, color: r.color, mqttId: r.mqttId,
-        maxSpeed: r.maxSpeed,          /* ✅ 추가 */
+        maxSpeed: r.maxSpeed,
         currentNode: r.currentNode,
         waypoints: r.waypoints.map(w => ({
           id: w.id, name: w.name,
@@ -2314,9 +2350,18 @@ function saveRobots(silent = false) {
         })),
       })),
     };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-    updateSaveTimeDisplay(payload.savedAt);
-    if (!silent) showToast('💾 저장되었습니다');
+
+    // ☁ Firebase에 저장 (비동기)
+    window.firebaseSave(FIREBASE_KEY, payload)
+      .then(() => {
+        updateSaveTimeDisplay(payload.savedAt);
+        if (!silent) showToast('☁ Firebase에 저장되었습니다');
+      })
+      .catch((e) => {
+        console.error('Firebase 저장 실패:', e);
+        if (!silent) showToast('⚠ 저장 실패: ' + e.message, true);
+      });
+
     return true;
   } catch (e) {
     console.error('저장 실패:', e);
@@ -2325,19 +2370,23 @@ function saveRobots(silent = false) {
   }
 }
 
+// ✅ Promise 반환 (비동기)
 function loadRobots() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const data = JSON.parse(raw);
-    if (!data || !Array.isArray(data.robots) || data.robots.length === 0) return null;
-    return data;
-  } catch (e) { return null; }
+  return new Promise((resolve) => {
+    window.firebaseLoad(FIREBASE_KEY, (data) => {
+      if (!data || !Array.isArray(data.robots) || data.robots.length === 0) {
+        resolve(null);
+      } else {
+        resolve(data);
+      }
+    });
+  });
 }
 
 function clearStorage() {
   try {
-    localStorage.removeItem(STORAGE_KEY);
+    // ☁ Firebase 노드 비우기 (null 로 덮어씀)
+    window.firebaseSave(FIREBASE_KEY, null);
     document.getElementById('saveTime').textContent = '-';
     return true;
   } catch (e) { return false; }
@@ -2471,10 +2520,11 @@ function importConfig(file) {
       renderAll();
 
       /* localStorage에도 반영 (다음 실행 시 유지) */
+      /* ☁ Firebase에 업로드 (다른 PC에서도 즉시 반영) */
       saveRobots(true);
 
-      addLog('INFO', `설정 파일을 가져왔습니다 (로봇 ${state.robots.length}대)`);
-      showToast('📥 설정을 성공적으로 가져왔습니다');
+      addLog('INFO', `☁ 설정 파일을 Firebase에 업로드했습니다 (로봇 ${state.robots.length}대)`);
+      showToast('📥 설정을 Firebase에 저장했습니다');
     } catch (err) {
       console.error(err);
       alert('파일 가져오기 실패: ' + err.message);
@@ -2767,8 +2817,10 @@ document.getElementById('btnResetRobots').addEventListener('click', async () => 
   updateMaxSpeedButtons();
   renderAll();
 
-  showToast('↺ 초기값으로 복원됨');
-  addLog('INFO', '내장 초기값으로 복원되었습니다.');
+  saveRobots(true);
+
+  showToast('↺ 초기값으로 복원되어 Firebase에 저장됨');
+  addLog('INFO', '내장 초기값으로 복원 후 Firebase에 저장되었습니다.');
 });
 
 document.getElementById('robotTabs').addEventListener('click', (e) => {
@@ -3090,8 +3142,10 @@ setTimeout(updateMapSize, 300);
 /* =========================================================
    초기 실행
    ========================================================= */
-(function init() {
-  const saved = loadRobots();
+(async function init() {
+  // ☁ Firebase에서 최신 설정 로드 (비동기)
+  const saved = await loadRobots();
+
   /* ✅ 저장된 값이 없으면 임베드된 DEFAULT_CONFIG 사용 */
   const config = saved || DEFAULT_CONFIG;
   const fromDefault = !saved;
@@ -3136,7 +3190,6 @@ setTimeout(updateMapSize, 300);
 
   /* ---- UI 초기화 ---- */
   initMapAspectRatio();
-
   renderRobotTabs();
   renderWaypoints();
   renderPath();
@@ -3148,15 +3201,17 @@ setTimeout(updateMapSize, 300);
   renderAll();
 
   addLog('INFO', 'iFMS Nano Mobility 관제 시스템이 시작되었습니다.');
+
   if (fromDefault) {
     addLog('INFO', `📦 내장 초기값을 불러왔습니다 (로봇 ${state.robots.length}대, 지도 ${MAP_WIDTH}m × ${MAP_HEIGHT}m).`);
+    // ☁ Firebase가 비어 있으면 초기값을 업로드 → 다른 PC에서도 볼 수 있게 함
+    saveRobots(true);
   } else {
-    addLog('INFO', `💾 저장된 로봇 ${state.robots.length}대를 불러왔습니다.`);
+    addLog('INFO', `☁ Firebase에서 로봇 ${state.robots.length}대를 불러왔습니다.`);
   }
   addLog('INFO', 'DEMO 모드 — 모든 로봇이 자율주행(순찰)을 시작합니다.');
 
   applyZoom();
-
   startDemoLoop();
   state.robots.forEach(r => startPatrol(r));
 })();
